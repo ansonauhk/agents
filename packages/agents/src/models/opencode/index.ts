@@ -28,6 +28,7 @@
  */
 
 import { Model, Provider, type Plugin } from "@opencode/plugin";
+import type { LanguageModelV4 } from "@ai-sdk/provider";
 import type { AISettings } from "../core/settings";
 import {
   createAI as createAISDK,
@@ -86,18 +87,19 @@ const DEFAULT_LIMIT: OpenCodeModelLimit = { context: 128_000, output: 8_192 };
 
 /**
  * The provider `createAI` returns. Call it with a model id — a Workers AI id,
- * an AI Gateway catalog id, or a dynamic route — to register the model with
- * the plugin and get OpenCode's reference to it.
+ * an AI Gateway catalog id, or a dynamic route — or a vendor's AI SDK model.
+ * Vendor models use `<provider>/<modelId>` as their OpenCode id and retain
+ * their own request format through AI Gateway.
  */
 export interface AI {
   /** A model, registered with the plugin. */
   (
-    modelId: CloudflareLanguageModelId,
+    modelId: CloudflareLanguageModelId | LanguageModelV4,
     options?: OpenCodeModelOptions
   ): OpenCodeModel;
   /** Same as calling the provider directly. */
   model(
-    modelId: CloudflareLanguageModelId,
+    modelId: CloudflareLanguageModelId | LanguageModelV4,
     options?: OpenCodeModelOptions
   ): OpenCodeModel;
   /** The OpenCode plugin. Pass it in `OpenCodeWorkerd.create({ plugins })`. */
@@ -113,7 +115,13 @@ export interface AI {
  */
 export function createAI(settings: AISettings): AI {
   const aiSdk = createAISDK(settings);
-  const models = new Map<string, OpenCodeModelOptions | undefined>();
+  const models = new Map<
+    string,
+    {
+      language: LanguageModelV4;
+      options?: OpenCodeModelOptions;
+    }
+  >();
   /** One reload per OpenCode instance the plugin is set up in. */
   const reloads = new Set<() => Promise<void>>();
   const providerID = Provider.ID.make(CLOUDFLARE_PROVIDER_ID);
@@ -139,15 +147,16 @@ export function createAI(settings: AISettings): AI {
             package: CARRIER_PACKAGE,
             settings: { baseURL: UNREACHABLE_BASE_URL, apiKey: "binding" }
           },
-          models: [...models].map(([id, options]) => info(id, options))
+          models: [...models].map(([id, entry]) => info(id, entry.options))
         });
       });
       const hook = await ctx.aisdk.hook(
         "language",
         (event) => {
           const id = event.model.modelID ?? event.model.id;
+          const entry = models.get(id);
           event.language = asLanguageModelV3(
-            aiSdk.languageModel(id, models.get(id))
+            entry?.language ?? aiSdk.languageModel(id)
           );
         },
         { providerID }
@@ -163,17 +172,24 @@ export function createAI(settings: AISettings): AI {
   };
 
   const model = (
-    modelId: CloudflareLanguageModelId,
+    modelId: CloudflareLanguageModelId | LanguageModelV4,
     options?: OpenCodeModelOptions
   ): OpenCodeModel => {
     // The same gate `agents/models/ai-sdk` applies, at the line that named the
     // model rather than at OpenCode's first request.
-    aiSdk.languageModel(modelId, options);
+    const language =
+      typeof modelId === "string"
+        ? aiSdk.languageModel(modelId, options)
+        : aiSdk.languageModel(modelId, options);
+    const id =
+      typeof modelId === "string"
+        ? modelId
+        : `${modelId.provider}/${modelId.modelId}`;
     const changed =
-      !models.has(modelId) ||
-      JSON.stringify(models.get(modelId)?.limit) !==
+      !models.has(id) ||
+      JSON.stringify(models.get(id)?.options?.limit) !==
         JSON.stringify(options?.limit);
-    models.set(modelId, options);
+    models.set(id, { language, options });
     // A model named, or its limit changed, after OpenCode started: rebuild
     // the provider's model list.
     if (changed) {
@@ -183,7 +199,7 @@ export function createAI(settings: AISettings): AI {
         });
       }
     }
-    return { providerID: CLOUDFLARE_PROVIDER_ID, id: modelId };
+    return { providerID: CLOUDFLARE_PROVIDER_ID, id };
   };
 
   return Object.assign(model, { model, plugin });
