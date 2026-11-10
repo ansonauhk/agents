@@ -13,6 +13,34 @@ import {
 } from "../../../models/core/gateway-providers";
 
 describe("core gateway providers — routing", () => {
+  it.each([
+    ["responses", ""],
+    ["responses", "?api-version=2025-04-01-preview"],
+    ["responses/resp_123", ""],
+    ["responses/resp_123/cancel", "?api-version=preview"]
+  ])("routes Azure v1 %s%s without a deployment segment", (path, query) => {
+    expect(
+      resolveGatewayProvider(
+        `https://acme.openai.azure.com/openai/v1/${path}${query}`
+      )
+    ).toEqual({
+      provider: "azure-openai",
+      endpoint: `acme/openai/${path}${query}`,
+      authHeaders: ["authorization", "api-key"]
+    });
+  });
+
+  it.each(["chat/completions", "embeddings", "responses-other"])(
+    "does not route the unsupported Azure v1 path %s",
+    (path) => {
+      const url = `https://acme.openai.azure.com/openai/v1/${path}`;
+      expect(resolveGatewayProvider(url)).toBeUndefined();
+      expect(() => requireGatewayProvider(url)).toThrow(
+        /useDeploymentBasedUrls: true/
+      );
+    }
+  );
+
   it("maps each vendor's base URL onto its gateway slug and endpoint", () => {
     const cases: [url: string, provider: string, endpoint: string][] = [
       ["https://api.anthropic.com/v1/messages", "anthropic", "v1/messages"],
