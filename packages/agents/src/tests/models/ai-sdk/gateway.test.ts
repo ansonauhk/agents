@@ -183,6 +183,36 @@ function anthropicResponse(): Response {
 }
 
 describe("universal gateway request", () => {
+  it("routes an Azure v1 Responses model through the named gateway", async () => {
+    const binding = fakeGatewayBinding({
+      native: () =>
+        new Response(OPENAI_RESPONSES_BODY, {
+          headers: { "content-type": "application/json" },
+          status: 200
+        })
+    });
+    // OpenAI's Responses client generates the same v1 URL as @ai-sdk/azure.
+    const azure = createOpenAI({
+      apiKey: "placeholder",
+      baseURL: "https://acme.openai.azure.com/openai/v1",
+      headers: { "api-key": "placeholder" }
+    });
+    const ai = createAI({ binding: asAi(binding), id: "azure-test" });
+    const result = await ai(azure.responses("my-deployment")).doGenerate(
+      callOptions({ maxOutputTokens: 16 })
+    );
+    expect(binding.native).toHaveLength(1);
+    const call = binding.native[0];
+    expect(call.provider).toBe("azure-openai");
+    expect(call.endpoint).toBe("acme/openai/responses");
+    expect(call.gatewayId).toBe("azure-test");
+    expect(call.query.model).toBe("my-deployment");
+    expect(call.query.max_output_tokens).toBe(16);
+    expect(call.headers).not.toHaveProperty("authorization");
+    expect(call.headers).not.toHaveProperty("api-key");
+    expect(result.usage.inputTokens.total).toBe(7);
+  });
+
   it("routes an Anthropic model by host and keeps its body verbatim", async () => {
     const binding = fakeGatewayBinding({
       native: () => anthropicResponse()
